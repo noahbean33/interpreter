@@ -1,38 +1,4 @@
-This is the repo used for the in-progress book "[Crafting Interpreters][]". It
-contains the Markdown text of the book, full implementations of both
-interpreters, as well as the build system to weave the two together into the
-final site.
 
-[crafting interpreters]: http://craftinginterpreters.com
-
-If you find an error or have a suggestion, please do file an issue here. Thank
-you!
-
-## Contributing
-
-One of the absolute best things about writing a book online and putting it out
-there before it's done is that people like you have been kind enough to give me
-feedback, point out typos, and find other errors or unclear text.
-
-If you'd like to do that, great! You can just file bugs here on the repo, or
-send a pull request if you're so inclined. If you want to send a pull request,
-but don't want to get the build system set up to regenerate the HTML too, don't
-worry about it. I'll do that when I pull it in.
-
-## Ports and implementations
-
-Another way to get involved is by sharing your own implementation of Lox. Ports
-to other languages are particularly useful since not every reader likes Java and
-C. Feel free to add your Lox port or implementation to the wiki:
-
-* [Lox implementations][]
-
-[lox implementations]: https://github.com/munificent/craftinginterpreters/wiki/Lox-implementations
-
-## Building Stuff
-
-I am a terribly forgetful, error-prone mammal, so I automated as much as I
-could.
 
 ### Prerequisites
 
