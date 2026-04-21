@@ -1,173 +1,284 @@
+# clox — A Bytecode Virtual Machine for the Lox Language
 
+A complete implementation of the **clox** bytecode interpreter for the [Lox programming language](https://craftinginterpreters.com/the-lox-language.html), based on Robert Nystrom's [*Crafting Interpreters*](https://craftinginterpreters.com/). clox compiles Lox source code into bytecode and executes it on a stack-based virtual machine written in C.
+
+---
+
+## What Is Lox?
+
+Lox is a dynamically typed, high-level scripting language. It supports:
+
+- **Dynamic typing** — Variables can hold values of any type.
+- **First-class functions** — Functions are values that can be passed around, returned, and stored.
+- **Closures** — Functions capture variables from their enclosing scope.
+- **Classes and inheritance** — Single-inheritance OOP with methods, initializers, and `this`/`super`.
+- **Automatic memory management** — A mark-and-sweep garbage collector handles all allocation.
+
+### Example
+
+```lox
+class Animal {
+  init(name) {
+    this.name = name;
+  }
+  speak() {
+    print this.name + " makes a sound.";
+  }
+}
+
+class Dog < Animal {
+  speak() {
+    print this.name + " barks!";
+  }
+}
+
+var dog = Dog("Rex");
+dog.speak(); // Rex barks!
+
+fun fib(n) {
+  if (n <= 1) return n;
+  return fib(n - 1) + fib(n - 2);
+}
+
+print fib(20); // 6765
+print clock();  // seconds since program start (native function)
+```
+
+---
+
+## How It Works
+
+The interpreter operates as a **three-stage pipeline**: scanning, compiling, and executing.
+
+### 1. Scanner (`scanner.c` / `scanner.h`)
+
+The scanner (lexer) takes raw Lox source code as a string and produces a flat stream of **tokens**. It is a single-pass, on-demand scanner — the compiler asks for the next token only when it needs one.
+
+Recognized token types include:
+- **Single-character tokens** — `(`, `)`, `{`, `}`, `,`, `.`, `-`, `+`, `;`, `/`, `*`
+- **One- or two-character tokens** — `!`, `!=`, `=`, `==`, `>`, `>=`, `<`, `<=`
+- **Literals** — number literals (`3.14`), string literals (`"hello"`)
+- **Identifiers and keywords** — `and`, `class`, `else`, `false`, `for`, `fun`, `if`, `nil`, `or`, `print`, `return`, `super`, `this`, `true`, `var`, `while`
+
+Whitespace and `//` line comments are silently skipped.
+
+### 2. Compiler (`compiler.c` / `compiler.h`)
+
+The compiler is a **single-pass Pratt parser** that reads the token stream and directly emits bytecode — there is no intermediate AST. It uses a table of parsing rules indexed by token type, where each rule specifies a prefix function, an infix function, and a precedence level.
+
+Key responsibilities:
+- **Expression compilation** — Handles unary, binary, grouping, literals, variables, assignments, logical operators, and function calls using precedence climbing.
+- **Statement compilation** — `print`, `if`/`else`, `while`, `for`, `return`, expression statements, blocks, variable declarations, function declarations, and class declarations.
+- **Local variables** — Tracks locals on a compile-time stack with lexical scoping. Locals are resolved by index at compile time and accessed by slot at runtime.
+- **Closures and upvalues** — When a function references a variable from an enclosing scope, the compiler emits `OP_CLOSURE` instructions with upvalue metadata so the VM can capture those variables at runtime.
+- **Classes and methods** — Compiles class bodies, method definitions, `this` bindings, `super` calls, and inheritance chains.
+
+Each function body (including the top-level script) gets its own `ObjFunction` with its own `Chunk` of bytecode.
+
+### 3. Virtual Machine (`vm.c` / `vm.h`)
+
+The VM is a **stack-based bytecode interpreter**. It maintains:
+
+- **A value stack** — Operands are pushed and popped as instructions execute.
+- **A call frame stack** — Each function invocation creates a `CallFrame` storing the closure, instruction pointer, and stack window for that call. The maximum call depth is 64 frames.
+- **A globals table** — A hash table mapping variable names to values.
+- **A strings table** — All strings are interned for fast equality comparison.
+
+The core execution loop (`run()`) fetches, decodes, and dispatches one bytecode instruction at a time. The full instruction set is:
+
+| Opcode | Description |
+|---|---|
+| `OP_CONSTANT` | Push a constant value onto the stack |
+| `OP_NIL`, `OP_TRUE`, `OP_FALSE` | Push literal `nil`, `true`, or `false` |
+| `OP_POP` | Discard the top stack value |
+| `OP_GET_LOCAL` / `OP_SET_LOCAL` | Read/write a local variable by stack slot |
+| `OP_GET_GLOBAL` / `OP_SET_GLOBAL` / `OP_DEFINE_GLOBAL` | Read/write/define a global variable by name |
+| `OP_GET_UPVALUE` / `OP_SET_UPVALUE` | Read/write a captured closure variable |
+| `OP_GET_PROPERTY` / `OP_SET_PROPERTY` | Read/write an instance field |
+| `OP_GET_SUPER` | Access a superclass method |
+| `OP_EQUAL`, `OP_GREATER`, `OP_LESS` | Comparison operators |
+| `OP_ADD`, `OP_SUBTRACT`, `OP_MULTIPLY`, `OP_DIVIDE` | Arithmetic (+ also concatenates strings) |
+| `OP_NOT`, `OP_NEGATE` | Unary operators |
+| `OP_PRINT` | Print the top stack value |
+| `OP_JUMP` / `OP_JUMP_IF_FALSE` / `OP_LOOP` | Control flow |
+| `OP_CALL` | Call a function or method |
+| `OP_INVOKE` / `OP_SUPER_INVOKE` | Optimized method invocation |
+| `OP_CLOSURE` | Create a closure, capturing upvalues |
+| `OP_CLOSE_UPVALUE` | Move an upvalue from the stack to the heap |
+| `OP_RETURN` | Return from the current function |
+| `OP_CLASS` | Create a new class object |
+| `OP_INHERIT` | Wire up superclass inheritance |
+| `OP_METHOD` | Bind a method to a class |
+
+**Native functions:** The VM defines one built-in native function, `clock()`, which returns the elapsed CPU time in seconds.
+
+---
+
+## Supporting Subsystems
+
+### Chunks (`chunk.c` / `chunk.h`)
+
+A `Chunk` is a dynamic array of bytecode (`uint8_t` codes), a parallel array of source line numbers (for error reporting), and a `ValueArray` of constants. Each compiled function owns one chunk.
+
+### Values (`value.c` / `value.h`)
+
+The `Value` type represents every runtime value in Lox. Two representations are supported, selected at compile time:
+
+- **Tagged union** (default) — A struct containing a `ValueType` enum and a union of `bool`, `double`, or `Obj*`.
+- **NaN boxing** (enabled by `#define NAN_BOXING`) — Packs all value types into a single 64-bit `uint64_t` by exploiting the unused bits in IEEE 754 NaN values. This improves cache performance and reduces memory usage.
+
+### Objects (`object.c` / `object.h`)
+
+Heap-allocated Lox values (strings, functions, classes, instances, closures, upvalues, bound methods, native functions) are represented as `Obj` structs linked into an intrusive list rooted at `vm.objects`. Each object has a type tag and an `isMarked` flag used by the garbage collector.
+
+Object types:
+- **`ObjString`** — An immutable string with a cached hash for O(1) hash table lookups. All strings are interned.
+- **`ObjFunction`** — A compiled function: name, arity, upvalue count, and its bytecode `Chunk`.
+- **`ObjClosure`** — Wraps an `ObjFunction` with an array of captured `ObjUpvalue` pointers.
+- **`ObjUpvalue`** — Points to a captured variable. While the variable is still on the stack, it points there; once the variable goes out of scope, its value is "closed over" into the upvalue's own `closed` field.
+- **`ObjNative`** — A C function pointer callable from Lox.
+- **`ObjClass`** — A class with a name and a method table.
+- **`ObjInstance`** — An instance with a reference to its class and a field table.
+- **`ObjBoundMethod`** — Binds a receiver instance to a closure for method dispatch.
+
+### Hash Table (`table.c` / `table.h`)
+
+An open-addressing hash table with linear probing, used for global variables, string interning, instance fields, and class methods. Key features:
+- Load factor capped at 75%; the table grows by doubling when exceeded.
+- Uses **tombstones** (sentinel entries) for deletion so probe sequences remain valid.
+- Capacity is always a power of two, allowing bitwise AND instead of modulo for index computation.
+
+### Memory and Garbage Collection (`memory.c` / `memory.h`)
+
+All dynamic memory flows through a single `reallocate()` function, which tracks total bytes allocated. The garbage collector is a **mark-and-sweep** collector:
+
+1. **Mark** — Starting from roots (the value stack, call frames, open upvalues, global variables, the compiler's own data, and the `init` string), recursively mark all reachable objects using a gray worklist.
+2. **Sweep** — Walk the full object list and free any unmarked objects. Interned strings with dead keys are also removed from the string table.
+
+Collection is triggered when `bytesAllocated` exceeds `nextGC`, which starts at 1 MB and grows by a factor of 2 after each collection.
+
+### Debug Disassembler (`debug.c` / `debug.h`)
+
+Provides human-readable disassembly of bytecode chunks. Enable diagnostic output by uncommenting the defines in `common.h`:
+- `DEBUG_PRINT_CODE` — Print the disassembled bytecode after compilation.
+- `DEBUG_TRACE_EXECUTION` — Print each instruction and the stack contents as the VM executes.
+- `DEBUG_STRESS_GC` — Run the garbage collector on every allocation (for testing).
+- `DEBUG_LOG_GC` — Log allocation, marking, and sweep events.
+
+---
+
+## Building
 
 ### Prerequisites
 
-I develop on an OS X machine, but any POSIX system should work too. With a
-little extra effort, you should be able to get this working on Windows as well,
-though I can't help you out much.
+- A **C compiler** (GCC, Clang, or MSVC)
+- **Make** (optional, for using the provided Makefile)
 
-Most of the work is orchestrated by make. The build scripts, test runner, and
-other utilities are all written in [Dart][]. Instructions to install Dart are
-[here][install]. Once you have Dart installed and on your path, run:
+### Using Make
 
 ```sh
-$ make get
+make clox
 ```
 
-[dart]: https://dart.dev/
-[install]: https://dart.dev/get-dart
+This compiles an optimized release build and copies the binary to the project root.
 
-This downloads all of the packages used by the build and test scripts.
-
-In order to compile the two interpreters, you also need a C compiler on your
-path as well as `javac`.
-
-### Building
-
-Once you've got that setup, try:
+For a debug build:
 
 ```sh
-$ make
+make debug
 ```
 
-If everything is working, that will generate the site for the book as well as
-compiling the two interpreters clox and jlox. You can run either interpreter
-right from the root of the repo:
+### Manual Compilation
+
+You can compile all `.c` files in `src/` directly:
 
 ```sh
-$ ./clox
-$ ./jlox
+gcc -O2 -o clox src/*.c
 ```
 
-### Hacking on the book
-
-The Markdown and snippets of source code are woven together into the final HTML
-using a hand-written static site generator that started out as a [single tiny
-Python script][py] for [my first book][gpp] and somehow grew into something
-approximating a real program.
-
-[py]: https://github.com/munificent/game-programming-patterns/blob/master/script/format.py
-[gpp]: http://gameprogrammingpatterns.com/
-
-The generated HTML is committed in the repo under `site/`. It is built from a
-combination of Markdown for prose, which lives in `book/`, and snippets of code
-that are weaved in from the Java and C implementations in `java/` and `c/`. (All
-of those funny looking comments in the source code are how it knows which
-snippet goes where.)
-
-The script that does all the magic is `tool/bin/build.dart`. You can run that
-directly, or run:
+Or on Windows with MSVC:
 
 ```sh
-$ make book
+cl /O2 /Fe:clox.exe src/*.c
 ```
 
-That generates the entire site in one batch. If you are incrementally working
-on it, you'll want to run the development server:
+---
+
+## Usage
+
+### Interactive REPL
+
+Run `clox` with no arguments to start an interactive prompt:
 
 ```sh
-$ make serve
+./clox
 ```
 
-This runs a little HTTP server on localhost rooted at the `site/` directory.
-Any time you request a page, it regenerates any files whose sources have been
-changed, including Markdown files, interpreter source files, templates, and
-assets. Just let that keep running, edit files locally, and refresh your
-browser to see the changes.
+```
+> print 1 + 2;
+3
+> var greeting = "hello";
+> print greeting + " world";
+hello world
+>
+```
 
-### Building the interpreters
+Type expressions and statements one line at a time. Press Ctrl+C or Ctrl+D to exit.
 
-You can build each interpreter like so:
+### Running a Script File
+
+Pass a `.lox` file path as an argument:
 
 ```sh
-$ make clox
-$ make jlox
+./clox script.lox
 ```
 
-This builds the final version of each interpreter as it appears at the end of
-its part in the book.
+### Exit Codes
 
-You can also see what the interpreters look like at the end of each chapter. (I
-use this to make sure they are working even in the middle of the book.) This is
-driven by a script, `tool/bin/split_chapters.dart` that uses the same comment
-markers for the code snippets to determine which chunks of code are present in
-each chapter. It takes only the snippets that have been seen by the end of each
-chapter and produces a new copy of the source in `gen/`, one directory for each
-chapter's code. (These are also an easier way to view the source code since they
-have all of the distracting marker comments stripped out.)
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 64 | Incorrect usage (wrong number of arguments) |
+| 65 | Compile error (syntax or static analysis error) |
+| 70 | Runtime error |
+| 74 | I/O error (could not open or read the source file) |
 
-Then, each of those can be built separately. Run:
-
-```sh
-$ make c_chapters
-```
-
-And in the `build/` directory, you'll get an executable for each chapter, like
-`chap14_chunks`, etc. Likewise:
-
-```sh
-$ make java_chapters
-```
-
-This compiles the Java code to classfiles in `build/gen/` in a subdirectory for
-each chapter.
+---
 
 ## Testing
 
-I have a full Lox test suite that I use to ensure the interpreters in the book
-do what they're supposed to do. The test cases live in `test/`. The Dart
-program `tool/bin/test.dart` is a test runner that runs each of those test
-files on a Lox interpreter, parses the result, and validates that that the test
-does what it's expected to do.
-
-There are various interpreters you can run the tests against:
+Test cases live in `test/`. A Dart-based test runner is provided:
 
 ```sh
-$ make test       # The final versions of clox and jlox.
-$ make test_clox  # The final version of clox.
-$ make test_jlox  # The final version of jlox.
-$ make test_c     # Every chapter's version of clox.
-$ make test_java  # Every chapter's version of jlox.
-$ make test_all   # All of the above.
+make test_clox
 ```
 
-### Testing your implementation
-
-You are welcome to use the test suite and the test runner to test your own Lox
-implementation. The test runner is at `tool/bin/test.dart` and can be given a
-custom interpreter executable to run using `--interpreter`. For example, if you
-had an interpreter executable at `my_code/boblox`, you could test it like:
+Or run the test runner directly:
 
 ```sh
-$ dart tool/bin/test.dart clox --interpreter my_code/boblox
+dart tool/bin/test.dart clox
 ```
 
-You still need to tell it which suite of tests to run because that determines
-the test expectations. If your interpreter should behave like jlox, use "jlox"
-as the suite name. If it behaves like clox, use "clox". If your interpreter is
-only complete up to the end of one of the chapters in the book, you can use
-that chapter as the suite, like "chap10_functions". See the Makefile for the
-names of all of the chapters.
+---
 
-If your interpreter needs other command line arguments passed to use, pass them
-to the test runner using `--arguments` and it will forward to your interpreter.
+## Source File Reference
 
-## Repository Layout
+| File | Purpose |
+|------|---------|
+| `main.c` | Entry point: REPL, file reader, and CLI argument handling |
+| `scanner.c/h` | Lexer — converts source text into tokens |
+| `compiler.c/h` | Single-pass Pratt parser and bytecode emitter |
+| `vm.c/h` | Stack-based bytecode virtual machine |
+| `chunk.c/h` | Bytecode storage (instruction arrays + constant pools) |
+| `value.c/h` | Runtime value representation (tagged union or NaN-boxed) |
+| `object.c/h` | Heap-allocated object types (strings, functions, classes, etc.) |
+| `table.c/h` | Hash table (open addressing, linear probing, tombstones) |
+| `memory.c/h` | Memory allocator and mark-and-sweep garbage collector |
+| `debug.c/h` | Bytecode disassembler and execution tracing |
+| `common.h` | Shared includes, feature flags, and constants |
 
-*   `asset/` – Sass files and jinja2 templates used to generate the site.
-*   `book/` - Markdown files for the text of each chapter.
-*   `build/` - Intermediate files and other build output (except for the site
-    itself) go here. Not committed to Git.
-*   `c/` – Source code of clox, the interpreter written in C. Also contains an
-    XCode project, if that's your thing.
-*   `gen/` – Java source files generated by GenerateAst.java go here. Not
-    committed.
-*   `java/` – Source code of jlox, the interpreter written in Java.
-*   `note/` – Various research, notes, TODOs, and other miscellanea.
-*   `note/answers` – Sample answers for the challenges. No cheating!
-*   `site/` – The final generated site. The contents of this directory directly
-    mirror craftinginterpreters.com. Most content here is generated by build.py,
-    but fonts, images, and JS only live here. Everything is committed, even the
-    generated content.
-*   `test/` – Test cases for the Lox implementations.
-*   `tool/` – Dart package containing the build, test, and other scripts.
+---
+
+## Acknowledgments
+
+Based on the clox interpreter from [*Crafting Interpreters*](https://craftinginterpreters.com/) by Robert Nystrom. The source code is licensed under the MIT License.
